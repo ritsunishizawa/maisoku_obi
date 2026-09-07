@@ -88,10 +88,11 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Hiragino Sans","Yu Gothic UI"
 .zone-overlay.on:hover{background:rgba(46,196,122,.08)}
 .zone-overlay.off:hover{background:rgba(230,57,70,.3)}
 .cut-line{position:absolute;left:0;right:0;height:3px;background:#e63946;cursor:ns-resize;z-index:3;transform:translateY(-50%)}
-.cut-line.inactive{background:rgba(0,0,0,0.01);border-top:2px dashed #aaa;height:4px}
+.cut-line.inactive{background:transparent;border-top:2px dashed #bbb}
 .cut-line.inactive .cut-line-handle{background:#bbb}
 .cut-line.inactive .cut-label{background:#bbb}
-.cut-line::before{content:"";position:absolute;left:0;right:0;top:-20px;bottom:-20px;cursor:ns-resize}
+.cut-hitarea{display:none}
+
 .cut-line-handle{position:absolute;top:50%;transform:translateY(-50%);background:#e63946;color:#fff;width:22px;height:22px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;cursor:ns-resize}
 .cut-line-handle.left-handle{left:6px}
 .cut-line-handle.right-handle{right:6px}
@@ -392,8 +393,8 @@ function renderPreview(){
     zonesHtml+='<div class="zone-overlay '+(z[i]?"on":"off")+'" id="zone'+i+'" style="top:'+t+'%;height:'+h+'%">'+(z[i]?"":"✕")+'</div>';
   }
   for(let i=0;i<3;i++){
-    const pos=L[i]*100,inactive=L[i]>=0.999;
-    linesHtml+='<div class="cut-line '+(inactive?"inactive":"")+'" id="line'+i+'" data-idx="'+i+'" style="top:'+pos+'%"><div class="cut-label" id="label'+i+'">'+(pos).toFixed(1)+'%</div><div class="cut-line-handle '+(i===0?"left-handle":"right-handle")+'">⇕</div></div>';
+    const pos=Math.min(L[i]*100,100),inactive=L[i]>=0.999;
+    linesHtml+='<div class="cut-line '+(inactive?"inactive":"")+'" id="line'+i+'" data-idx="'+i+'" style="top:'+pos+'%"><div class="cut-hitarea"></div><div class="cut-label" id="label'+i+'">'+(pos).toFixed(1)+'%</div><div class="cut-line-handle '+(i===0?"left-handle":"right-handle")+'">⇕</div></div>';
   }
   wrap.innerHTML='<div class="preview-stage" id="previewStage"><canvas id="pvCanvas"></canvas>'+zonesHtml+linesHtml+'</div>';
   const c=document.getElementById("pvCanvas");c.width=p.previewCanvas.width;c.height=p.previewCanvas.height;c.getContext("2d").drawImage(p.previewCanvas,0,0);
@@ -410,41 +411,40 @@ function updatePreviewCSS(){
   for(let i=0;i<3;i++){
     const el=document.getElementById("line"+i);
     const lbl=document.getElementById("label"+i);
-    if(el){el.style.top=(L[i]*100)+"%";el.classList.toggle("inactive",L[i]>=0.999)}
+    if(el){el.style.top=Math.min(L[i]*100,100)+"%";el.classList.toggle("inactive",L[i]>=0.999)}
     if(lbl)lbl.textContent=(L[i]*100).toFixed(1)+"%";
   }
 }
 
 function attachPreviewEvents(){
   const stage=document.getElementById("previewStage");if(!stage)return;
-  function findNearestLine(yR){
-    const p=pages[currentIdx],L=p.lines;
-    let best=-1,bestDist=Infinity;
-    for(let i=0;i<3;i++){const d=Math.abs(yR-L[i]);if(d<bestDist){bestDist=d;best=i}}
-    return bestDist<0.04?best:-1;
-  }
-  function startDrag(lineIdx,e){
-    e.preventDefault();e.stopPropagation();
-    isDragging=true;activeLine=lineIdx;
+  function startDrag(idx,e){
+    e.preventDefault();isDragging=true;activeLine=idx;
     document.body.style.cursor="ns-resize";
-    document.addEventListener("mousemove",onLineMove);
-    document.addEventListener("mouseup",onLineUp);
-    document.addEventListener("touchmove",onLineMove,{passive:false});
-    document.addEventListener("touchend",onLineUp);
+    document.addEventListener("mousemove",onLineMove);document.addEventListener("mouseup",onLineUp);
+    document.addEventListener("touchmove",onLineMove,{passive:false});document.addEventListener("touchend",onLineUp);
+  }
+  function hitTestLine(clientY){
+    const c=document.getElementById("pvCanvas");if(!c)return-1;
+    const rect=c.getBoundingClientRect();
+    const p=pages[currentIdx],L=p.lines;
+    for(let i=0;i<3;i++){
+      const linePx=L[i]*rect.height+rect.top;
+      if(Math.abs(clientY-linePx)<=5)return i;
+    }
+    return-1;
   }
   stage.addEventListener("mousedown",e=>{
-    const c=document.getElementById("pvCanvas");if(!c)return;
-    const rect=c.getBoundingClientRect();const yR=(e.clientY-rect.top)/rect.height;
-    const li=findNearestLine(yR);
-    if(li>=0)startDrag(li,e);
+    const li=hitTestLine(e.clientY);
+    if(li>=0){startDrag(li,e);return}
   });
   stage.addEventListener("touchstart",e=>{
-    const c=document.getElementById("pvCanvas");if(!c)return;
-    const rect=c.getBoundingClientRect();const yR=(e.touches[0].clientY-rect.top)/rect.height;
-    const li=findNearestLine(yR);
-    if(li>=0)startDrag(li,e);
+    const li=hitTestLine(e.touches[0].clientY);
+    if(li>=0){startDrag(li,e);return}
   },{passive:false});
-  stage.addEventListener("click",e=>{if(isDragging||justDragged)return;const c=document.getElementById("pvCanvas");if(!c)return;
+  stage.addEventListener("click",e=>{if(isDragging||justDragged)return;
+    const c=document.getElementById("pvCanvas");if(!c)return;
+    if(hitTestLine(e.clientY)>=0)return;
     const rect=c.getBoundingClientRect();const yR=Math.max(0,Math.min(1,(e.clientY-rect.top)/rect.height));
     const p=pages[currentIdx],L=p.lines;
     let zi=3;for(let i=0;i<3;i++){if(yR<L[i]){zi=i;break}}
@@ -455,7 +455,7 @@ function getY(e){return e.touches?e.touches[0].clientY:e.clientY}
 function onLineMove(e){if(!isDragging||activeLine===null)return;e.preventDefault();const c=document.getElementById("pvCanvas");if(!c)return;
   const rect=c.getBoundingClientRect();let ratio=(getY(e)-rect.top)/rect.height;const p=pages[currentIdx],i=activeLine;
   const minV=i===0?0:p.lines[i-1]+0.02;
-  const maxV=i===2?1:(p.lines[i+1]>=0.999?1:p.lines[i+1]-0.02);
+  const maxV=i===2?1:Math.min(1,p.lines[i+1]-0.02);
   ratio=Math.max(minV,Math.min(maxV,ratio));
   p.lines[i]=ratio;
   updatePreviewCSS();
