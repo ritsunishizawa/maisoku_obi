@@ -88,11 +88,11 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Hiragino Sans","Yu Gothic UI"
 .zone-overlay.on:hover{background:rgba(46,196,122,.08)}
 .zone-overlay.off:hover{background:rgba(230,57,70,.3)}
 .cut-line{position:absolute;left:0;right:0;height:3px;background:#e63946;cursor:ns-resize;z-index:3;transform:translateY(-50%)}
-.cut-line.inactive{background:transparent;border-top:2px dashed #bbb;height:0}
+.cut-line.inactive{background:rgba(0,0,0,0.01);border-top:2px dashed #aaa;height:4px}
 .cut-line.inactive .cut-line-handle{background:#bbb}
-.cut-line.inactive .cut-label{display:none}
-.cut-line::before{content:"";position:absolute;left:0;right:0;top:-8px;bottom:-8px;cursor:ns-resize}
-.cut-line-handle{position:absolute;top:50%;transform:translateY(-50%);background:#e63946;color:#fff;width:22px;height:22px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;pointer-events:none}
+.cut-line.inactive .cut-label{background:#bbb}
+.cut-line::before{content:"";position:absolute;left:0;right:0;top:-20px;bottom:-20px;cursor:ns-resize}
+.cut-line-handle{position:absolute;top:50%;transform:translateY(-50%);background:#e63946;color:#fff;width:22px;height:22px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;cursor:ns-resize}
 .cut-line-handle.left-handle{left:6px}
 .cut-line-handle.right-handle{right:6px}
 .cut-label{position:absolute;left:50%;top:5px;transform:translateX(-50%);background:#e63946;color:#fff;padding:2px 7px;border-radius:4px;font-size:10px;font-weight:700;pointer-events:none;white-space:nowrap;line-height:1.4}
@@ -153,7 +153,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Hiragino Sans","Yu Gothic UI"
       <div class="page-list" id="pageList">
         <div class="empty-state"><div class="icon">📋</div>PDFを追加するとここに<br>ページ一覧が表示されます</div>
       </div>
-      <div class="hint-sec">💡 プレビューの赤線をドラッグして切り取り位置を調整<br>ゾーン（赤い領域）をクリックで残す/切るを切り替え<br>↑↓キーでページ送り ・ ドラッグで並び替え</div>
+      <div class="hint-sec">💡 赤線2本で切り取り位置を調整（帯が2つある場合にも対応）<br>下のグレー破線を上にドラッグすると2本目の切り取りラインが出現<br>ゾーン（赤い領域）をクリックで残す/切るを切り替え</div>
     </div>
     <div class="right">
       <div class="page-nav">
@@ -210,6 +210,46 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Hiragino Sans","Yu Gothic UI"
 //# sourceMappingURL=pdf-lib.min.js.map
 </script>
 <script type="module">
+
+// === セッション保存（F5で復元、タブ閉じでクリア）===
+const DB_NAME="obiToolDB",STORE="sessions",SESSION_FLAG="obi_session_active";
+function openDB(){return new Promise((res,rej)=>{const r=indexedDB.open(DB_NAME,1);r.onupgradeneeded=e=>{e.target.result.createObjectStore(STORE)};r.onsuccess=e=>res(e.target.result);r.onerror=e=>rej(e.target.error)})}
+async function saveSession(){
+  try{
+    sessionStorage.setItem(SESSION_FLAG,"1");
+    const db=await openDB();
+    const meta=pages.map(p=>({filename:p.filename,pageNum:p.pageNum,pageCount:p.pageCount,skip:p.skip,lines:p.lines,zones:p.zones,user_rotation:p.user_rotation}));
+    const pdfs=pages.map(p=>new Uint8Array(p.pdfData));
+    const tx=db.transaction(STORE,"readwrite");
+    tx.objectStore(STORE).put({meta,pdfs,currentIdx},"state");
+    await new Promise((res,rej)=>{tx.oncomplete=res;tx.onerror=rej});
+  }catch(e){console.warn("saveSession:",e)}
+}
+async function loadSession(){
+  try{
+    if(!sessionStorage.getItem(SESSION_FLAG)){await clearSession();return false}
+    const db=await openDB();
+    const tx=db.transaction(STORE,"readonly");
+    const req=tx.objectStore(STORE).get("state");
+    const state=await new Promise((res,rej)=>{req.onsuccess=()=>res(req.result);req.onerror=rej});
+    if(!state||!state.meta||!state.meta.length)return false;
+    pages=[];
+    for(let i=0;i<state.meta.length;i++){
+      const m=state.meta[i];
+      const pdfData=state.pdfs[i].buffer;
+      pages.push({pdfData,filename:m.filename,pageNum:m.pageNum,pageCount:m.pageCount,skip:m.skip,lines:m.lines||[0.85,1.0,1.0],zones:m.zones||[true,false,true,true],user_rotation:m.user_rotation||0,previewCanvas:null});
+    }
+    currentIdx=state.currentIdx||0;
+    if(currentIdx>=pages.length)currentIdx=0;
+    return true;
+  }catch(e){console.warn("loadSession:",e);return false}
+}
+async function clearSession(){
+  try{sessionStorage.removeItem(SESSION_FLAG);const db=await openDB();const tx=db.transaction(STORE,"readwrite");tx.objectStore(STORE).delete("state")}catch(e){}
+}
+function autoSave(){setTimeout(saveSession,100)}
+window.addEventListener("beforeunload",e=>{if(pages.length){e.preventDefault();e.returnValue=""}});
+
 // === PDFium初期化 ===
 import{init}from"https://cdn.jsdelivr.net/npm/@embedpdf/pdfium@2.15.0/dist/index.browser.js";
 let pdfiumMod=null;
@@ -274,7 +314,7 @@ let obiSrc=localStorage.getItem("customObi")||null;
 let obiReady=false;
 if(obiSrc){obiImg.src=obiSrc;obiReady=true;document.getElementById("obiInfo").classList.remove("warn");document.getElementById("obiInfo").classList.add("custom");document.getElementById("obiName").textContent="設定済み"}
 
-function newPage(pdfData,filename,pageNum,pageCount){return{pdfData,filename,pageNum,pageCount,skip:false,top_line:0.85,bottom_line:1.0,zones:[true,false,true],user_rotation:0,previewCanvas:null}}
+function newPage(pdfData,filename,pageNum,pageCount){return{pdfData,filename,pageNum,pageCount,skip:false,lines:[0.85,1.0,1.0],zones:[true,false,true,true],user_rotation:0,previewCanvas:null}}
 
 // 帯変更
 window.changeObi=function(input){
@@ -323,7 +363,7 @@ async function loadPdfFile(file){
     document.getElementById("processStatus").className="status";
     document.getElementById("outputBox").style.display="none";
     showStatus("pdfStatus","✓ "+file.name+"（"+pc+"ページ）を追加","success");
-    await goToPage(firstIdx);
+    await goToPage(firstIdx);autoSave();
   }catch(e){showStatus("pdfStatus","✗ "+e.message,"error")}
 }
 
@@ -333,7 +373,7 @@ async function goToPage(idx){
   document.getElementById("processBtn").disabled=!obiReady;
   document.getElementById("rotateBtn").disabled=false;
   showLoading("プレビュー生成中...");
-  try{const p=pages[idx];p.previewCanvas=await renderPageToCanvas(p,PREVIEW_SCALE);renderPreview()}catch(e){console.error(e)}
+  try{const p=pages[idx];p.previewCanvas=await renderPageToCanvas(p,PREVIEW_SCALE);renderPreview();autoSave()}catch(e){console.error(e)}
   hideLoading();
 }
 
@@ -344,76 +384,111 @@ function renderPreview(){
     wrap.innerHTML='<div class="preview-stage"><canvas id="pvCanvas"></canvas><div class="skip-overlay"><span>帯替えスキップ</span></div></div>';
     const c=document.getElementById("pvCanvas");c.width=p.previewCanvas.width;c.height=p.previewCanvas.height;c.getContext("2d").drawImage(p.previewCanvas,0,0);return;
   }
-  const tl=p.top_line,bl=p.bottom_line,z=p.zones,blI=bl>=0.999;
-  wrap.innerHTML='<div class="preview-stage" id="previewStage"><canvas id="pvCanvas"></canvas>'+
-    '<div class="zone-overlay '+(z[0]?"on":"off")+'" id="zone0" style="top:0;height:'+(tl*100)+'%">'+(z[0]?"":"✕ 切り取り")+'</div>'+
-    '<div class="zone-overlay '+(z[1]?"on":"off")+'" id="zone1" style="top:'+(tl*100)+'%;height:'+((bl-tl)*100)+'%">'+(z[1]?"":"✕ 切り取り")+'</div>'+
-    '<div class="zone-overlay '+(z[2]?"on":"off")+'" id="zone2" style="top:'+(bl*100)+'%;height:'+((1-bl)*100)+'%">'+(z[2]?"":"✕ 切り取り")+'</div>'+
-    '<div class="cut-line" id="topLine" data-line="top" style="top:'+(tl*100)+'%"><div class="cut-label" id="topLabel">'+(tl*100).toFixed(1)+'%</div><div class="cut-line-handle left-handle">⇕</div></div>'+
-    '<div class="cut-line '+(blI?"inactive":"")+'" id="bottomLine" data-line="bottom" style="top:'+(bl*100)+'%"><div class="cut-label" id="bottomLabel">'+(bl*100).toFixed(1)+'%</div><div class="cut-line-handle right-handle">⇕</div></div></div>';
+  const L=p.lines,z=p.zones;
+  const bounds=[0,...L,1];
+  let zonesHtml="",linesHtml="";
+  for(let i=0;i<4;i++){
+    const t=bounds[i]*100,h=(bounds[i+1]-bounds[i])*100;
+    zonesHtml+='<div class="zone-overlay '+(z[i]?"on":"off")+'" id="zone'+i+'" style="top:'+t+'%;height:'+h+'%">'+(z[i]?"":"✕")+'</div>';
+  }
+  for(let i=0;i<3;i++){
+    const pos=L[i]*100,inactive=L[i]>=0.999;
+    linesHtml+='<div class="cut-line '+(inactive?"inactive":"")+'" id="line'+i+'" data-idx="'+i+'" style="top:'+pos+'%"><div class="cut-label" id="label'+i+'">'+(pos).toFixed(1)+'%</div><div class="cut-line-handle '+(i===0?"left-handle":"right-handle")+'">⇕</div></div>';
+  }
+  wrap.innerHTML='<div class="preview-stage" id="previewStage"><canvas id="pvCanvas"></canvas>'+zonesHtml+linesHtml+'</div>';
   const c=document.getElementById("pvCanvas");c.width=p.previewCanvas.width;c.height=p.previewCanvas.height;c.getContext("2d").drawImage(p.previewCanvas,0,0);
   attachPreviewEvents();
 }
 
 function updatePreviewCSS(){
-  const p=pages[currentIdx],tl=p.top_line,bl=p.bottom_line;
-  const te=document.getElementById("topLine"),be=document.getElementById("bottomLine");
-  const z0=document.getElementById("zone0"),z1=document.getElementById("zone1"),z2=document.getElementById("zone2");
-  if(te)te.style.top=(tl*100)+"%";if(be){be.style.top=(bl*100)+"%";be.classList.toggle("inactive",bl>=0.999)}
-  if(z0)z0.style.height=(tl*100)+"%";if(z1){z1.style.top=(tl*100)+"%";z1.style.height=((bl-tl)*100)+"%"}
-  if(z2){z2.style.top=(bl*100)+"%";z2.style.height=((1-bl)*100)+"%"}
-  const tl_=document.getElementById("topLabel"),bl_=document.getElementById("bottomLabel");
-  if(tl_)tl_.textContent=(tl*100).toFixed(1)+"%";if(bl_)bl_.textContent=(bl*100).toFixed(1)+"%";
+  const p=pages[currentIdx],L=p.lines;
+  const bounds=[0,...L,1];
+  for(let i=0;i<4;i++){
+    const el=document.getElementById("zone"+i);
+    if(el){el.style.top=(bounds[i]*100)+"%";el.style.height=((bounds[i+1]-bounds[i])*100)+"%"}
+  }
+  for(let i=0;i<3;i++){
+    const el=document.getElementById("line"+i);
+    const lbl=document.getElementById("label"+i);
+    if(el){el.style.top=(L[i]*100)+"%";el.classList.toggle("inactive",L[i]>=0.999)}
+    if(lbl)lbl.textContent=(L[i]*100).toFixed(1)+"%";
+  }
 }
 
 function attachPreviewEvents(){
   const stage=document.getElementById("previewStage");if(!stage)return;
-  ["topLine","bottomLine"].forEach(id=>{const el=document.getElementById(id);if(!el)return;
-    el.addEventListener("mousedown",e=>{e.preventDefault();e.stopPropagation();isDragging=true;activeLine=id;document.body.style.cursor="ns-resize";document.addEventListener("mousemove",onLineMove);document.addEventListener("mouseup",onLineUp)});
-    el.addEventListener("touchstart",e=>{e.preventDefault();e.stopPropagation();isDragging=true;activeLine=id;document.addEventListener("touchmove",onLineMove,{passive:false});document.addEventListener("touchend",onLineUp)},{passive:false});
+  function findNearestLine(yR){
+    const p=pages[currentIdx],L=p.lines;
+    let best=-1,bestDist=Infinity;
+    for(let i=0;i<3;i++){const d=Math.abs(yR-L[i]);if(d<bestDist){bestDist=d;best=i}}
+    return bestDist<0.04?best:-1;
+  }
+  function startDrag(lineIdx,e){
+    e.preventDefault();e.stopPropagation();
+    isDragging=true;activeLine=lineIdx;
+    document.body.style.cursor="ns-resize";
+    document.addEventListener("mousemove",onLineMove);
+    document.addEventListener("mouseup",onLineUp);
+    document.addEventListener("touchmove",onLineMove,{passive:false});
+    document.addEventListener("touchend",onLineUp);
+  }
+  stage.addEventListener("mousedown",e=>{
+    const c=document.getElementById("pvCanvas");if(!c)return;
+    const rect=c.getBoundingClientRect();const yR=(e.clientY-rect.top)/rect.height;
+    const li=findNearestLine(yR);
+    if(li>=0)startDrag(li,e);
   });
+  stage.addEventListener("touchstart",e=>{
+    const c=document.getElementById("pvCanvas");if(!c)return;
+    const rect=c.getBoundingClientRect();const yR=(e.touches[0].clientY-rect.top)/rect.height;
+    const li=findNearestLine(yR);
+    if(li>=0)startDrag(li,e);
+  },{passive:false});
   stage.addEventListener("click",e=>{if(isDragging||justDragged)return;const c=document.getElementById("pvCanvas");if(!c)return;
     const rect=c.getBoundingClientRect();const yR=Math.max(0,Math.min(1,(e.clientY-rect.top)/rect.height));
-    const p=pages[currentIdx];let zi;if(yR<p.top_line)zi=0;else if(yR<p.bottom_line)zi=1;else zi=2;
-    p.zones[zi]=!p.zones[zi];renderPreview();renderPageList();
+    const p=pages[currentIdx],L=p.lines;
+    let zi=3;for(let i=0;i<3;i++){if(yR<L[i]){zi=i;break}}
+    p.zones[zi]=!p.zones[zi];renderPreview();renderPageList();autoSave();
   });
 }
 function getY(e){return e.touches?e.touches[0].clientY:e.clientY}
-function onLineMove(e){if(!isDragging)return;e.preventDefault();const c=document.getElementById("pvCanvas");if(!c)return;
-  const rect=c.getBoundingClientRect();let ratio=(getY(e)-rect.top)/rect.height;const p=pages[currentIdx];
-  if(activeLine==="topLine"){ratio=Math.max(0,Math.min(0.99,ratio));ratio=Math.min(ratio,p.bottom_line-0.02);p.top_line=ratio}
-  else{ratio=Math.max(0.01,Math.min(1,ratio));ratio=Math.max(ratio,p.top_line+0.02);p.bottom_line=ratio}
+function onLineMove(e){if(!isDragging||activeLine===null)return;e.preventDefault();const c=document.getElementById("pvCanvas");if(!c)return;
+  const rect=c.getBoundingClientRect();let ratio=(getY(e)-rect.top)/rect.height;const p=pages[currentIdx],i=activeLine;
+  const minV=i===0?0:p.lines[i-1]+0.02;
+  const maxV=i===2?1:(p.lines[i+1]>=0.999?1:p.lines[i+1]-0.02);
+  ratio=Math.max(minV,Math.min(maxV,ratio));
+  p.lines[i]=ratio;
   updatePreviewCSS();
 }
 function onLineUp(){isDragging=false;activeLine=null;justDragged=true;setTimeout(()=>{justDragged=false},100);
   document.body.style.cursor="";document.removeEventListener("mousemove",onLineMove);document.removeEventListener("mouseup",onLineUp);
-  document.removeEventListener("touchmove",onLineMove);document.removeEventListener("touchend",onLineUp);renderPageList();
+  document.removeEventListener("touchmove",onLineMove);document.removeEventListener("touchend",onLineUp);renderPageList();autoSave();
 }
 
 window.rotatePage=async function(){if(currentIdx<0||currentIdx>=pages.length)return;const p=pages[currentIdx];
-  p.user_rotation=(p.user_rotation+90)%360;p.top_line=0.85;p.bottom_line=1.0;p.zones=[true,false,true];
+  p.user_rotation=(p.user_rotation+90)%360;p.lines=[0.85,1.0,1.0];p.zones=[true,false,true,true];
   showLoading("回転中...");p.previewCanvas=await renderPageToCanvas(p,PREVIEW_SCALE);renderPreview();renderPageList();hideLoading()};
-window.toggleSkip=function(idx){pages[idx].skip=!pages[idx].skip;renderPageList();updateSkipAllBtn();if(idx===currentIdx)renderPreview()};
+window.toggleSkip=function(idx){pages[idx].skip=!pages[idx].skip;renderPageList();updateSkipAllBtn();if(idx===currentIdx)renderPreview();autoSave()};
 window.toggleAllSkip=function(){const a=pages.every(p=>p.skip);pages.forEach(p=>{p.skip=!a});renderPageList();updateSkipAllBtn();if(pages.length)renderPreview()};
 function updateSkipAllBtn(){const btn=document.getElementById("skipAllBtn");if(!pages.length){btn.disabled=true;btn.className="btn-sm skip";btn.textContent="⏩全スキップ";return}
   btn.disabled=false;if(pages.every(p=>p.skip)){btn.className="btn-sm skip on";btn.textContent="↩全解除"}else{btn.className="btn-sm skip";btn.textContent="⏩全スキップ"}}
 window.clearAll=function(){if(!confirm("すべて削除しますか？"))return;pages=[];currentIdx=0;renderPageList();updateOutputUI();updatePageNav();updateSkipAllBtn();
-  document.getElementById("clearAllBtn").disabled=true;document.getElementById("processBtn").disabled=true;document.getElementById("rotateBtn").disabled=true;resetPlaceholder();showStatus("pdfStatus","✓ すべて削除しました","info")};
+  document.getElementById("clearAllBtn").disabled=true;document.getElementById("processBtn").disabled=true;document.getElementById("rotateBtn").disabled=true;resetPlaceholder();showStatus("pdfStatus","✓ すべて削除しました","info");clearSession()};
 window.removePage=function(idx){if(!confirm("ページ "+(idx+1)+" を削除？"))return;pages.splice(idx,1);if(currentIdx>=pages.length)currentIdx=Math.max(0,pages.length-1);
-  renderPageList();updateOutputUI();updateSkipAllBtn();if(!pages.length){resetPlaceholder();document.getElementById("processBtn").disabled=true;document.getElementById("clearAllBtn").disabled=true;document.getElementById("rotateBtn").disabled=true;updatePageNav()}else goToPage(currentIdx)};
+  renderPageList();updateOutputUI();updateSkipAllBtn();autoSave();if(!pages.length){resetPlaceholder();document.getElementById("processBtn").disabled=true;document.getElementById("clearAllBtn").disabled=true;document.getElementById("rotateBtn").disabled=true;updatePageNav()}else goToPage(currentIdx)};
 window.movePage=async function(idx,delta){const ni=idx+delta;if(ni<0||ni>=pages.length)return;[pages[idx],pages[ni]]=[pages[ni],pages[idx]];
   if(currentIdx===idx)currentIdx=ni;else if(currentIdx===ni)currentIdx=idx;renderPageList();updateOutputUI();await goToPage(currentIdx)};
 function resetPlaceholder(){document.getElementById("previewWrap").innerHTML='<div class="preview-placeholder"><div class="icon">📄</div><div class="main-text">PDFファイルをドラッグ&ドロップ</div><div class="sub-text">または下のボタンから選択（複数同時OK）</div><label class="add-link">ファイルを選択<input type="file" accept=".pdf" multiple onchange="onFileSelect(this)"></label></div>'}
 
-function getPageLabel(p){if(p.skip)return"スキップ";const tl=p.top_line,bl=p.bottom_line,z=p.zones,k=[];
-  if(z[0]&&tl>0.001)k.push("上"+(tl*100).toFixed(0)+"%");if(z[1]&&(bl-tl)>0.001)k.push("中"+((bl-tl)*100).toFixed(0)+"%");
-  if(z[2]&&(1-bl)>0.001)k.push("下"+((1-bl)*100).toFixed(0)+"%");let l=k.length?k.join("+"):"なし";if(p.user_rotation)l+=" ↻"+p.user_rotation+"°";return l}
+function getPageLabel(p){if(p.skip)return"スキップ";const L=p.lines,z=p.zones,bounds=[0,...L,1],names=["①","②","③","④"],k=[];
+  for(let i=0;i<4;i++){const h=bounds[i+1]-bounds[i];if(z[i]&&h>0.001)k.push(names[i]+(h*100).toFixed(0)+"%")}
+  let l=k.length?k.join("+"):"なし";if(p.user_rotation)l+=" ↻"+p.user_rotation+"°";return l}
 
 function renderPageList(){const list=document.getElementById("pageList"),total=document.getElementById("totalLabel");
   if(!pages.length){list.innerHTML='<div class="empty-state"><div class="icon">📋</div>PDFを追加するとここに<br>ページ一覧が表示されます</div>';total.textContent="";return}
   total.textContent="全"+pages.length+"ページ";list.innerHTML="";
   pages.forEach((p,i)=>{const isSkip=p.skip,label=getPageLabel(p);
-    const isDef=!isSkip&&Math.abs(p.top_line-0.85)<0.001&&p.bottom_line>=0.999&&p.zones[0]&&!p.zones[1]&&p.zones[2]&&!p.user_rotation;
+    const isDef=!isSkip&&Math.abs(p.lines[0]-0.85)<0.001&&p.lines[1]>=0.999&&p.lines[2]>=0.999&&p.zones[0]&&!p.zones[1]&&p.zones[2]&&p.zones[3]&&!p.user_rotation;
     const item=document.createElement("div");item.className="page-item"+(i===currentIdx?" active":"")+(isSkip?" skipped":"");item.draggable=true;item.dataset.idx=i;
     item.innerHTML='<span class="drag-handle">⠿</span><div class="pinfo"><div class="pname">ページ '+(i+1)+(isSkip?' <span class="skip-badge">スキップ</span>':"")+'</div><div class="pfname" title="'+p.filename+'">'+p.filename+'（元p'+(p.pageNum+1)+'）</div></div><div class="pright">'+(isSkip?"":('<span class="info-tag '+(isDef?"def":"")+'">'+label+"</span>"))+'<button class="skip-btn '+(isSkip?"on":"")+'" onclick="event.stopPropagation();toggleSkip('+i+')">'+(isSkip?"⏭":"⏩")+'</button><div class="arrow-btns"><button class="arrow-btn" onclick="event.stopPropagation();movePage('+i+',-1)"'+(i===0?" disabled":"")+'>▲</button><button class="arrow-btn" onclick="event.stopPropagation();movePage('+i+',1)"'+(i===pages.length-1?" disabled":"")+'>▼</button></div><button class="del-btn" onclick="event.stopPropagation();removePage('+i+')">✕</button></div>';
     item.addEventListener("click",()=>goToPage(i));
@@ -476,10 +551,8 @@ window.processAll=async function(){
       }
 
       const s=targetW/pageWPt;
-      const parts=[];const tl=p.top_line,bl=p.bottom_line,z=p.zones;
-      if(z[0]&&tl>0.001)parts.push([0,tl]);
-      if(z[1]&&(bl-tl)>0.001)parts.push([tl,bl]);
-      if(z[2]&&(1-bl)>0.001)parts.push([bl,1]);
+      const parts=[];const L=p.lines,z=p.zones,bounds=[0,...L,1];
+      for(let zi=0;zi<4;zi++){const s=bounds[zi],e=bounds[zi+1];if(z[zi]&&(e-s)>0.001)parts.push([s,e])}
       if(!parts.length)continue;
 
       const contentH=parts.reduce((a,pr)=>a+(pr[1]-pr[0])*pageHPt*s,0);
@@ -517,6 +590,19 @@ window.processAll=async function(){
 };
 
 function showStatus(id,msg,type){const el=document.getElementById(id);el.textContent=msg;el.className="status "+type}
+
+// 起動時にセッション復元
+(async()=>{
+  const restored=await loadSession();
+  if(restored&&pages.length){
+    renderPageList();updateOutputUI();updateSkipAllBtn();
+    document.getElementById("clearAllBtn").disabled=false;
+    document.getElementById("processBtn").disabled=!obiReady;
+    await goToPage(currentIdx);
+    showStatus("pdfStatus","✓ 前回のセッションを復元しました（"+pages.length+"ページ）","info");
+  }
+})();
+
 function showLoading(t){document.getElementById("loadingText").textContent=t;document.getElementById("loadingOverlay").classList.add("show")}
 function hideLoading(){document.getElementById("loadingOverlay").classList.remove("show")}
 </script>
